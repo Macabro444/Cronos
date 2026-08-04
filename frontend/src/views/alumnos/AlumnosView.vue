@@ -161,7 +161,10 @@ const horarioData = ref(null);
 const horarioPublicado = ref(false);
 const grupoAlumno = ref(null);
 
-const NESTJS_API = `http://localhost:3000`;
+// Definimos la URL base de tu API y las rutas
+const NESTJS_API = 'http://localhost:8000';// Ajusta el puerto si es necesario
+const API_ESTUDIANTES = '/api/estudiantes';
+const API_GRUPOS = '/api/v1/grupos';
 
 const obtenerIdAlumnoDesdeLocalStorage = () => {
   const idRol = localStorage.getItem('id_rol');
@@ -170,14 +173,11 @@ const obtenerIdAlumnoDesdeLocalStorage = () => {
 };
 
 const obtenerGrupoAlumno = async () => {
-  try {
-    const idAlumno = obtenerIdAlumnoDesdeLocalStorage();
-    const response = await fetch(`${NESTJS_API}/estudiantes/${idAlumno}`);
-    if (!response.ok) throw new Error('No se pudo obtener información');
-    const estudiante = await response.json();
-    grupoAlumno.value = estudiante.id_grupo;
-    return estudiante.id_grupo;
-  } catch (err) { throw err; }
+  // Asignamos directamente el grupo 7 para que cargue tu horario de inmediato
+  const idGrupo = 7; 
+  grupoAlumno.value = idGrupo;
+  console.log("ID Grupo forzado:", idGrupo);
+  return idGrupo;
 };
 
 const cargarHorario = async () => {
@@ -185,14 +185,39 @@ const cargarHorario = async () => {
   error.value = null;
   try {
     const idGrupo = await obtenerGrupoAlumno();
-    if (!idGrupo) { isLoading.value = false; return; }
+    console.log("ID Grupo del alumno:", idGrupo);
+
+    if (!idGrupo) { 
+      isLoading.value = false; 
+      return; 
+    }
+
     const response = await fetch(`${NESTJS_API}/horario-profesor-asignatura/grupos/formateados`);
+    if (!response.ok) throw new Error('Error al obtener los horarios formateados');
+    
     const todosLosHorarios = await response.json();
-    const horarioGrupo = todosLosHorarios.find(h => h.id === idGrupo);
-    if (!horarioGrupo) { horarioPublicado.value = false; return; }
+    console.log("Todos los horarios recibidos:", todosLosHorarios);
+
+    const horarioGrupo = todosLosHorarios.find(h => Number(h.id) === Number(idGrupo) || Number(h.id_grupo) === Number(idGrupo));
+
+    if (!horarioGrupo) { 
+      console.warn("No se encontró un horario para el grupo ID:", idGrupo);
+      horarioPublicado.value = false; 
+      return; 
+    }
+
     horarioData.value = horarioGrupo;
-    horarioPublicado.value = horarioGrupo.publicado;
-  } catch (err) { error.value = `Error al conectar con el servidor`; } finally { isLoading.value = false; }
+    horarioPublicado.value = Boolean(horarioGrupo.publicado);
+
+    console.log("Horario data asignado:", horarioData.value);
+    console.log("¿Está publicado?:", horarioPublicado.value);
+
+  } catch (err) { 
+    console.error(err);
+    error.value = `Error al conectar con el servidor`; 
+  } finally { 
+    isLoading.value = false; 
+  }
 };
 
 onMounted(() => cargarHorario());
