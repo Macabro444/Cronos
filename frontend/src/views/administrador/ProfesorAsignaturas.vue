@@ -122,7 +122,7 @@
                 <select v-model="form.id_asignatura" required>
                   <option disabled value="">Selecciona una asignatura</option>
                   <option v-for="asig in asignaturas" :key="asig.id" :value="asig.id">
-                    {{ asig.nombre }}
+                    {{ asig.nombre }} - {{ obtenerAbreviaturaDivision(asig.divisionId) }}
                   </option>
                 </select>
               </div>
@@ -132,7 +132,7 @@
                 <select v-model="form.id_aula">
                   <option value="">Sin aula</option>
                   <option v-for="aula in aulas" :key="aula.id" :value="aula.id">
-                    {{ aula.nombre }}
+                    {{ aula.nombre }} - {{ aula.nombreEdificio }}
                   </option>
                 </select>
               </div>
@@ -189,7 +189,8 @@ const API_PROFESORES = 'http://localhost:8080/api/teachers'
 const API_ASIGNATURAS = 'http://localhost:8080/api/curriculum'
 const API_PERIODOS = 'http://localhost:8080/api/periodos'
 const API_GRUPOS = 'http://localhost:8080/api/v1/grupos'
-const API_AULAS = 'http://localhost:8080/aulas' 
+const API_AULAS = 'http://localhost:8080/aulas'
+const API_DIVISIONES = 'http://localhost:8080/divisiones'
 
 const asignaciones = ref([])
 const profesores = ref([])
@@ -197,6 +198,7 @@ const asignaturas = ref([])
 const periodos = ref([])
 const grupos = ref([])
 const aulas = ref([])
+const divisiones = ref([])
 
 // ✅ Cache de nombres de usuario, para no repetir peticiones al mismo idUsuario
 const usuariosCache = ref({})
@@ -249,9 +251,27 @@ const obtenerNombreProfesor = async (idProfesor) => {
   return await obtenerNombreUsuario(profesor.idUsuario)
 }
 
+const obtenerAsignaturaObj = (idAsignatura) => {
+  return asignaturas.value.find(a => a.id === idAsignatura) || null
+}
+
 const obtenerNombreAsignatura = (idAsignatura) => {
-  const asig = asignaturas.value.find(a => a.id === idAsignatura)
+  const asig = obtenerAsignaturaObj(idAsignatura)
   return asig ? asig.nombre : '-'
+}
+
+// ✅ Resuelve el nombre de la división a partir del divisionId de la asignatura
+const obtenerNombreDivision = (idDivision) => {
+  if (!idDivision) return '-'
+  const division = divisiones.value.find(d => d.id === idDivision)
+  return division ? division.nombre : '-'
+}
+
+// ✅ Resuelve la abreviatura de la división para mostrarla junto a la asignatura en el formulario
+const obtenerAbreviaturaDivision = (idDivision) => {
+  if (!idDivision) return ''
+  const division = divisiones.value.find(d => d.id === idDivision)
+  return division ? division.abreviatura : ''
 }
 
 const obtenerNombreGrupo = (idGrupo) => {
@@ -271,18 +291,20 @@ const obtenerAula = (idAula) => {
 
 const cargarCatalogos = async () => {
   try {
-    const [profRes, asigRes, perRes, gruposRes, aulasRes] = await Promise.all([
+    const [profRes, asigRes, perRes, gruposRes, aulasRes, divisionesRes] = await Promise.all([
       axios.get(API_PROFESORES),
       axios.get(API_ASIGNATURAS),
       axios.get(API_PERIODOS),
       axios.get(API_GRUPOS),
-      axios.get(API_AULAS)
+      axios.get(API_AULAS),
+      axios.get(API_DIVISIONES)
     ])
     profesores.value = profRes.data
     asignaturas.value = asigRes.data
     periodos.value = perRes.data
     grupos.value = gruposRes.data
     aulas.value = aulasRes.data
+    divisiones.value = divisionesRes.data
   } catch (err) {
     console.error('Error cargando catálogos:', err)
     await Swal.fire({
@@ -318,13 +340,15 @@ const cargarAsignaciones = async () => {
           .filter(Boolean)
           .join(', ')
 
+        const asignaturaObj = obtenerAsignaturaObj(asig.idAsignatura)
+
         return {
           id: asig.id,
           nombreProfesor: await obtenerNombreProfesor(asig.idProfesor),
-          asignatura: obtenerNombreAsignatura(asig.idAsignatura),
-          division: '-', // el catálogo de curriculum no trae división anidada; se deja pendiente si se necesita
+          asignatura: asignaturaObj ? asignaturaObj.nombre : '-',
+          division: obtenerNombreDivision(asignaturaObj ? asignaturaObj.divisionId : null),
           aula: aulaInfo ? aulaInfo.nombre : '-',
-          edificio: '-', // el catálogo de aulas no trae edificio anidado por ahora
+          edificio: aulaInfo ? (aulaInfo.nombreEdificio || '-') : '-',
           periodo: obtenerNombrePeriodo(asig.idPeriodo),
           grupos: nombresGrupos || '-',
           datosOriginales: asig

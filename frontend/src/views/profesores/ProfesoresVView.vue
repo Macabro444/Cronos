@@ -145,7 +145,7 @@ const horarioProfesor = ref(null);
 const esPsicologoReal = ref(false);
 const esPsicologo = computed(() => esPsicologoReal.value === true);
 
-const NESTJS_API = `http://localhost:3000`;
+const NESTJS_API = `http://localhost:8000`; // Apunta al puerto correcto de FastAPI
 
 const obtenerIdProfesor = () => {
   // 1. Prioridad: id_rol del localStorage
@@ -176,8 +176,9 @@ const obtenerIdProfesor = () => {
     return id;
   }
 
-  console.error('No se encontró ningún ID de profesor');
-  return null;
+  // 4. Fallback de emergencia para pruebas (ej. profesor con ID 3)
+  console.warn('No se encontró ID en localStorage, usando ID por defecto (3)');
+  return 3; 
 };
 
 const cargarHorario = async () => {

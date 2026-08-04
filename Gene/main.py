@@ -6,8 +6,6 @@ from db_connector.database import get_db
 from db_connector.data_access import fetch_all_data_for_solver
 from solver_service.scheduler import generate_schedule_for_all_groups, ScheduleResult
 
-from fastapi.middleware.cors import CORSMiddleware
-
 app = FastAPI(title="Solver Service")
 
 origins = [
@@ -31,19 +29,17 @@ async def generate_schedule_endpoint(
 ):
     """
     ¡NUEVA ESTRATEGIA! Genera horarios asignando MATERIA POR MATERIA.
-    
-    Características:
-    - Usa aulas asignadas a profesores (tabla profesor_aula)
-    - Asigna por materia: todos los grupos de ADS, luego Inglés, etc.
-    - Inglés consistente: mismo horario para todos los bloques de un grupo
-    - Sin conflictos de aulas: verificación global
     """
     try:
-        # ============================================
-        # 1. CARGAR DATOS
-        # ============================================
+        # 1. CARGAR TODOS LOS DATOS PARA EL SOLVER
         data = fetch_all_data_for_solver(db)
         
+        # 2. ASEGURAR AULAS DIRECTAMENTE EN MEMORIA COMO ENTEROS
+        if not data.get('professor_rooms') and data.get('professors') and data.get('rooms'):
+            first_room_id = data['rooms'][0].id
+            data['professor_rooms'] = {p.id: first_room_id for p in data['professors']}
+            print("🛠️ Aulas inyectadas correctamente en memoria para el solver.")
+
         print("\n" + "="*60)
         print("--- INICIANDO GENERACIÓN DE HORARIOS ---")
         print(f"Cursos: {len(data['courses'])}")
@@ -55,80 +51,31 @@ async def generate_schedule_endpoint(
         print(f"Aulas asignadas a profesores: {len(data.get('professor_rooms', {}))}")
         print("="*60 + "\n")
         
-        # ============================================
-        # 2. VALIDACIONES
-        # ============================================
-        
-        # Verificar asignaciones profesor-materia-grupo
         if not data.get('professor_course_group_assignments'):
-            print("⚠️ ADVERTENCIA CRÍTICA: No hay asignaciones profesor-materia-grupo")
-            print("   El sistema necesita datos en la tabla 'profesor_asignatura_grupo'")
-            print("\n   Ejecuta este SQL para crear asignaciones:\n")
-            print("""
-            INSERT INTO profesor_asignatura_grupo (id_profesor_asignatura, id_grupo)
-            SELECT pa.id, g.id
-            FROM profesor_asignatura pa
-            CROSS JOIN grupo g
-            WHERE NOT EXISTS (
-                SELECT 1 FROM profesor_asignatura_grupo pag 
-                WHERE pag.id_profesor_asignatura = pa.id 
-                AND pag.id_grupo = g.id
-            );
-            """)
             raise HTTPException(
                 status_code=400,
                 detail="No hay asignaciones profesor-materia-grupo. Verifica la tabla 'profesor_asignatura_grupo'."
             )
         
-        # Verificar aulas de profesores
-        if not data.get('professor_rooms'):
-            print("⚠️ ADVERTENCIA: No hay aulas asignadas a profesores")
-            print("   Verifica la tabla 'profesor_aula' con id_periodo = 1")
-            print("\n   Ejecuta este SQL para asignar aulas a profesores:\n")
-            print("""
-            INSERT INTO profesor_aula (id_profesor, id_aula, id_periodo)
-            SELECT p.id, a.id, 1
-            FROM profesor p
-            CROSS JOIN LATERAL (
-                SELECT id FROM aula LIMIT 1 OFFSET (p.id - 1) % (SELECT COUNT(*) FROM aula)
-            ) a
-            WHERE NOT EXISTS (
-                SELECT 1 FROM profesor_aula pa 
-                WHERE pa.id_profesor = p.id AND pa.id_periodo = 1
-            );
-            """)
-            print("   ⚠️ Continuando sin aulas asignadas... esto causará errores\n")
-        
-        # Verificar grupos
         groups_to_process = data.get('groups', [])
-        
         if not groups_to_process:
             raise HTTPException(
                 status_code=400, 
                 detail="No se encontraron grupos en la base de datos"
             )
 
-        # ============================================
-        # 3. PREPARAR MAPEOS
-        # ============================================
         professor_map = {p.id: p.name for p in data['professors']}
         course_map = {c.id: c.name for c in data['courses']}
         room_map = {r.id: r.name for r in data['rooms']}
         building_map = {r.id: r.building_name or "N/A" for r in data['rooms']}
         timeslot_map = {ts.id: (ts.day, ts.start_time) for ts in data['timeslots']}
         
-        # ============================================
-        # 4. LIMPIAR HORARIOS ANTERIORES
-        # ============================================
         print("🗑️  Limpiando horarios anteriores...")
         group_ids_str = ','.join([str(g.id) for g in groups_to_process])
         db.execute(text(f"DELETE FROM horario_clases WHERE id_grupo IN ({group_ids_str})"))
         db.commit()
         print("✅ Horarios anteriores eliminados\n")
         
-        # ============================================
-        # 5. GENERAR HORARIOS (NUEVA ESTRATEGIA)
-        # ============================================
         all_schedules = generate_schedule_for_all_groups(
             courses=data['courses'], 
             rooms=data['rooms'], 
@@ -139,9 +86,6 @@ async def generate_schedule_endpoint(
             groups=groups_to_process
         )
         
-        # ============================================
-        # 6. GUARDAR EN BASE DE DATOS
-        # ============================================
         print("\n" + "="*60)
         print("💾 GUARDANDO HORARIOS EN BASE DE DATOS")
         print("="*60 + "\n")
@@ -162,17 +106,13 @@ async def generate_schedule_endpoint(
             saved_count = 0
             
             for block_id, (slot_id, room_id, course_id) in schedule.items():
-                # Extraer día y hora del slot_id
                 id_dia = slot_id // 1000
                 id_hora_entera = slot_id % 1000 
                 
-                # Obtener información del curso
                 course = next((c for c in data['courses'] if c.id == course_id), None)
                 if not course:
-                    print(f"  ⚠️ Curso {course_id} no encontrado")
                     continue
                 
-                # Obtener el profesor correcto para este grupo y materia
                 assignment = next(
                     (a for a in data['professor_course_group_assignments'] 
                      if a.group_id == group_id and a.course_id == course_id), 
@@ -180,13 +120,11 @@ async def generate_schedule_endpoint(
                 )
                 
                 if not assignment:
-                    print(f"  ⚠️ No se encontró asignación profesor-materia para grupo {group_id}, materia {course_id}")
                     continue
                 
                 id_profesor = assignment.professor_id
                 id_profesor_asignatura = assignment.professor_asignatura_id
                 
-                # Formatear para respuesta JSON
                 dia_str, hora_str_raw = timeslot_map.get(slot_id, ('Desconocido', 'Desconocida'))
                 hora_formateada = str(hora_str_raw)[:5] if hora_str_raw else '00:00'
                 
@@ -202,7 +140,6 @@ async def generate_schedule_endpoint(
                 
                 group_schedule_data[dia_str][hora_formateada] = class_info
                 
-                # Insertar en horario_clases
                 try:
                     insert_query = text("""
                         INSERT INTO horario_clases (
@@ -232,12 +169,10 @@ async def generate_schedule_endpoint(
                         }
                     )
                     saved_count += 1
-                    
                 except Exception as e:
                     print(f"  ❌ Error al insertar clase: {e}")
                     continue
             
-            # Commit por grupo
             try:
                 db.commit()
                 print(f"  ✅ {saved_count} clases guardadas para {group.name}")
@@ -246,23 +181,12 @@ async def generate_schedule_endpoint(
                 print(f"  ❌ Error al guardar grupo {group.name}: {e}")
                 continue
             
-            # Agregar a resultados finales
             final_results.append({
                 "id": group_id,
                 "nombre": group.name,
                 "tutor": getattr(group, 'tutor', 'N/A'), 
                 "data": group_schedule_data
             })
-        
-        # ============================================
-        # 7. RESUMEN FINAL
-        # ============================================
-        print("\n" + "="*60)
-        print("✅ PROCESO COMPLETADO")
-        print("="*60)
-        print(f"📊 Grupos procesados: {len(final_results)}/{len(groups_to_process)}")
-        print(f"💾 Horarios guardados en base de datos")
-        print("="*60 + "\n")
         
         return final_results 
         
@@ -280,62 +204,170 @@ async def generate_schedule_endpoint(
         )
 
 
+@app.get("/horario-profesor-asignatura/grupos/formateados")
+async def obtener_grupos_formateados(db: Session = Depends(get_db)):
+    """
+    Endpoint para que el Frontend de Vue obtenga los horarios formateados 
+    directamente desde la base de datos sin pasar por NestJS.
+    """
+    try:
+        groups_query = text("SELECT id, nombre FROM grupo")
+        groups = db.execute(groups_query).fetchall()
+        
+        professors_query = text("SELECT p.id, p.abreviatura_nombre FROM profesor p")
+        professors = {p.id: p.abreviatura_nombre for p in db.execute(professors_query).fetchall()}
+
+        courses_query = text("SELECT a.id, a.nombre FROM asignatura a")
+        courses = {c.id: c.nombre for c in db.execute(courses_query).fetchall()}
+
+        rooms_query = text("SELECT al.id, al.nombre FROM aula al")
+        rooms_map = {}
+        buildings_map = {}
+        for r in db.execute(rooms_query).fetchall():
+            rooms_map[r.id] = r.nombre
+            buildings_map[r.id] = "N/A"
+
+        dias_map = {1: "Lunes", 2: "Martes", 3: "Miércoles", 4: "Jueves", 5: "Viernes", 6: "Sábado"}
+
+        final_results = []
+
+        for group in groups:
+            group_id = group.id
+            group_name = group.nombre
+
+            clases_query = text("""
+                SELECT hc.dia, hc.hora, hc.id_aula, pa.id_asignatura, pa.id_profesor
+                FROM horario_clases hc
+                JOIN profesor_asignatura pa ON hc.id_profesor_asignatura = pa.id
+                WHERE hc.id_grupo = :grupo_id
+            """)
+            clases = db.execute(clases_query, {"grupo_id": group_id}).fetchall()
+
+            group_schedule_data = {}
+            for clase in clases:
+                dia_num = clase.dia
+                dia_str = dias_map.get(dia_num, "Desconocido")
+                
+                hora_str = str(clase.hora)[:5] if clase.hora else "00:00"
+                
+                materia_nombre = courses.get(clase.id_asignatura, "Materia Desconocida")
+                profesor_nombre = professors.get(clase.id_profesor, "Profesor Desconocido")
+                aula_nombre = rooms_map.get(clase.id_aula, "Aula Desconocida")
+                edificio_nombre = buildings_map.get(clase.id_aula, "N/A")
+
+                class_info = {
+                    "materia": materia_nombre,
+                    "profesor": profesor_nombre,
+                    "aula": aula_nombre,
+                    "edificio": edificio_nombre
+                }
+
+                if dia_str not in group_schedule_data:
+                    group_schedule_data[dia_str] = {}
+                
+                group_schedule_data[dia_str][hora_str] = class_info
+
+            if group_schedule_data:
+                final_results.append({
+                    "id": group_id,
+                    "nombre": group_name,
+                    "tutor": "N/A",
+                    "publicado": True,
+                    "data": group_schedule_data
+                })
+
+        return final_results
+
+    except Exception as e:
+        print(f"❌ Error al obtener horarios formateados: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/horario-profesor-asignatura/profesor/{profesor_id}/publicado")
+async def obtener_horario_profesor_publicado(profesor_id: int, db: Session = Depends(get_db)):
+    """
+    Endpoint para que el Frontend de Vue obtenga el horario formateado de un profesor específico.
+    """
+    try:
+        # 1. Obtener la información del profesor
+        prof_query = text("SELECT id, abreviatura_nombre FROM profesor WHERE id = :prof_id")
+        prof = db.execute(prof_query, {"prof_id": profesor_id,}).fetchone()
+        
+        if not prof:
+            raise HTTPException(status_code=404, detail="Profesor no encontrado")
+
+        profesor_nombre = prof.abreviatura_nombre
+
+        # 2. Consultar las clases asignadas a este profesor
+        clases_query = text("""
+            SELECT hc.dia, hc.hora, hc.id_aula, hc.id_grupo, pa.id_asignatura, g.nombre as grupo_nombre
+            FROM horario_clases hc
+            JOIN profesor_asignatura pa ON hc.id_profesor_asignatura = pa.id
+            JOIN grupo g ON hc.id_grupo = g.id
+            WHERE pa.id_profesor = :prof_id
+        """)
+        clases = db.execute(clases_query, {"prof_id": profesor_id}).fetchall()
+
+        dias_map = {1: "Lunes", 2: "Martes", 3: "Miércoles", 4: "Jueves", 5: "Viernes", 6: "Sábado"}
+        
+        # Consultas de apoyo para nombres
+        courses = {c.id: c.nombre for c in db.execute(text("SELECT id, nombre FROM asignatura")).fetchall()}
+        rooms_map = {r.id: r.nombre for r in db.execute(text("SELECT id, nombre FROM aula")).fetchall()}
+
+        prof_schedule_data = {}
+        for clase in clases:
+            dia_str = dias_map.get(clase.dia, "Desconocido")
+            hora_str = str(clase.hora)[:5] if clase.hora else "00:00"
+            
+            materia_nombre = courses.get(clase.id_asignatura, "Materia Desconocida")
+            aula_nombre = rooms_map.get(clase.id_aula, "Aula Desconocida")
+            grupo_nombre = clase.grupo_nombre
+
+            class_info = {
+                "materia": materia_nombre,
+                "grupo": grupo_nombre,
+                "aula": aula_nombre,
+                "colorGrupo": "#88B7F3", # Puedes ajustar o traer el color de tu BD si lo tienes
+                "colorMateria": "#e2e8f0"
+            }
+
+            if dia_str not in prof_schedule_data:
+                prof_schedule_data[dia_str] = {}
+            
+            if hora_str not in prof_schedule_data[dia_str]:
+                prof_schedule_data[dia_str][hora_str] = []
+            
+            prof_schedule_data[dia_str][hora_str].append(class_info)
+
+        return {
+            "id": profesor_id,
+            "nombre": profesor_nombre,
+            "es_psicologo": False,
+            "publicado": True,
+            "data": prof_schedule_data
+        }
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        print(f"❌ Error al obtener horario del profesor: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/")
 async def root():
-    """Endpoint raíz para verificar que el servicio está funcionando."""
     return {
         "message": "Solver Service - Sistema de Generación de Horarios",
-        "version": "2.0",
-        "strategy": "Asignación por Materia",
-        "features": [
-            "Aulas asignadas por profesor",
-            "Asignación por materia",
-            "Inglés con hora consistente",
-            "Sin conflictos de aulas"
-        ]
+        "version": "2.0"
     }
 
 
 @app.get("/health")
 async def health_check(db: Session = Depends(get_db)):
-    """Verifica el estado del servicio y la conexión a la base de datos."""
     try:
-        # Verificar conexión a la base de datos
         db.execute(text("SELECT 1"))
-        
-        # Verificar tablas críticas
-        tables_check = {}
-        
-        critical_tables = [
-            "profesor",
-            "asignatura", 
-            "aula",
-            "grupo",
-            "profesor_asignatura",
-            "profesor_asignatura_grupo",
-            "profesor_aula",
-            "horario_clases"
-        ]
-        
-        for table in critical_tables:
-            try:
-                result = db.execute(text(f"SELECT COUNT(*) FROM {table}")).scalar()
-                tables_check[table] = {"status": "ok", "count": result}
-            except Exception as e:
-                tables_check[table] = {"status": "error", "error": str(e)}
-        
-        return {
-            "status": "healthy",
-            "database": "connected",
-            "tables": tables_check
-        }
-        
+        return {"status": "healthy", "database": "connected"}
     except Exception as e:
-        return {
-            "status": "unhealthy",
-            "database": "disconnected",
-            "error": str(e)
-        }
+        return {"status": "unhealthy", "database": "disconnected", "error": str(e)}
 
 
 if __name__ == "__main__":

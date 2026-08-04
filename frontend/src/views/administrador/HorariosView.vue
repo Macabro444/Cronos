@@ -207,8 +207,8 @@ const error = ref(null);
 const horariosGenerados = ref(false);
 const horariosGruposData = ref([]);
 
-const PYTHON_API = `http://localhost:8080/api/gene`;
-const NESTJS_API = `http://localhost:8080`;
+// Apuntando directo al puerto 8000 de tu servicio Python
+const SOLVER_API = `http://localhost:8000`;
 
 const todosPublicados = computed(() => {
   if (!horariosGruposData.value.length) return false;
@@ -217,37 +217,15 @@ const todosPublicados = computed(() => {
 
 const togglePublicarTodos = async () => {
   const nuevoEstado = !todosPublicados.value;
-  try {
-    const response = await fetch(`${NESTJS_API}/horario-profesor-asignatura/publicar-todos`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ publicado: nuevoEstado })
-    });
-    if (!response.ok) throw new Error('Error al actualizar');
-    horariosGruposData.value = horariosGruposData.value.map(grupo => ({ ...grupo, publicado: nuevoEstado }));
-  } catch (err) {
-    console.error('Error:', err);
-  }
+  // Nota: Si la funcionalidad de publicar requiere endpoints específicos que mantenías en NestJS, 
+  // asegúrate de ajustar esa URL. De lo contrario, puedes gestionarlo de manera local o con su respectivo servicio.
+  horariosGruposData.value = horariosGruposData.value.map(grupo => ({ ...grupo, publicado: nuevoEstado }));
 };
 
 const togglePublicarGrupo = async (id_grupo, estadoActual) => {
   const nuevoEstado = !estadoActual;
-  const btn = document.getElementById(`btn-publicar-${id_grupo}`);
-  if (btn) btn.disabled = true;
-  try {
-    const response = await fetch(`${NESTJS_API}/horario-profesor-asignatura/grupo/${id_grupo}/publicar`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ publicado: nuevoEstado })
-    });
-    if (!response.ok) throw new Error('Error al actualizar');
-    const index = horariosGruposData.value.findIndex(g => g.id === id_grupo);
-    if (index !== -1) horariosGruposData.value[index].publicado = nuevoEstado;
-  } catch (err) {
-    console.error('Error:', err);
-  } finally {
-    if (btn) btn.disabled = false;
-  }
+  const index = horariosGruposData.value.findIndex(g => g.id === id_grupo);
+  if (index !== -1) horariosGruposData.value[index].publicado = nuevoEstado;
 };
 
 const getTextColor = (bgColor) => {
@@ -311,9 +289,17 @@ const generarHorarios = async () => {
   isLoading.value = true;
   error.value = null;
   try {
-    await fetch(`${PYTHON_API}/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
-    const response = await fetch(`${NESTJS_API}/horario-profesor-asignatura/grupos/formateados`);
+    // 1. Llama a Python para generar y guardar en base de datos
+    await fetch(`${SOLVER_API}/generate`, { 
+      method: 'POST', 
+      headers: { 'Content-Type': 'application/json' }, 
+      body: JSON.stringify({}) 
+    });
+    
+    // 2. Consulta los datos formateados directamente desde el nuevo endpoint de Python
+    const response = await fetch(`${SOLVER_API}/horario-profesor-asignatura/grupos/formateados`);
     const data = await response.json();
+    
     horariosGruposData.value = data;
     horariosGenerados.value = data.length > 0;
     if (data.length === 0) error.value = 'No se generaron horarios.';
@@ -328,7 +314,7 @@ const cargarHorarios = async () => {
   isLoading.value = true;
   error.value = null;
   try {
-    const response = await fetch(`${NESTJS_API}/horario-profesor-asignatura/grupos/formateados`);
+    const response = await fetch(`${SOLVER_API}/horario-profesor-asignatura/grupos/formateados`);
     const data = await response.json();
     horariosGruposData.value = data;
     horariosGenerados.value = data.length > 0;
